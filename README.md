@@ -2,7 +2,7 @@
 Forecasting agency spending and vendor receivable as well as measuring similarities between these organizations
 
 # Software Requirement
-Jupyter Notebook
+Jupyter Notebook, R IDE
 
 # Acknowledgement
 A challenge provided by Bill.com at Rice datathon 2021 spring
