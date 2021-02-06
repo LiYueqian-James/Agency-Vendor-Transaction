@@ -1,0 +1,281 @@
+---
+title: "Bill.com Forcast"
+author: "Lynn Niu, James Li, Bosco Zhu "
+date: "2021/2/6"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data Cleaning
+```{r}
+library(magrittr)
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(readr)
+df <- read_csv("C:/R Dataset/Purchase_Card_Transactions.csv")
+names(df)[1] = "OBJECTID"
+# Remove NAs
+df[df == "N/A"] = NA
+df[df == ""] = NA
+```
+
+# Exploratory Analysis
+```{r}
+# Density of transaction amount
+ggplot(df, aes(x=TRANSACTION_AMOUNT)) + geom_density() + xlim(-5000,5000)
+
+# Transaction distribution by industry
+t_list <- as.data.frame(rev(sort(table(df$MCC_DESCRIPTION))))
+plot(t_list$Freq, type = "line", ylab = "Aggregate Transaction Amount", xlab = "Aggregate Transaction Types")
+# Industries with 5000+ Transaction Volumes
+industry <- subset(t_list, Freq>5000)
+# Composition
+comp <- data.frame(industry = c("Consumer Staples","Business Service", "Industrials", "Technology", "Donation", "Education", "Government"), transaction_num = c(
+  sum(industry[c(1,2,3,5,11,16),2]),
+  sum(industry[c(4,9,14,15,17),2]),
+  sum(industry[c(6,13),2]),
+  sum(industry[c(7,18),2]),
+  sum(industry[8,2]),
+  sum(industry[10,2]),
+  sum(industry[12,2]))
+)
+pie(comp$transaction_num, labels = comp$industry, main="Transaction Distribution among Industries ")
+```
+
+
+
+
+# Spending Forcast for the agencies
+* remove large outliers
+
+# Data Reorganization
+```{r}
+# Reformatting
+df %>% 
+  mutate(TRANSACTION_DATE = format(as_date(ymd_hms(TRANSACTION_DATE)), "%Y-%m"))%>%
+  group_by(AGENCY, TRANSACTION_DATE) %>%
+  summarise(TRANSACTION_AMOUNT_SUM = sum(TRANSACTION_AMOUNT),
+            MONTHLY_COUNTS = n()) -> df_agency_0
+df_agency_0 %>%
+    mutate(month = substring(TRANSACTION_DATE,6,7), 
+         year = substring(TRANSACTION_DATE,1,4)) -> df_agency
+df_agency
+
+# Remove Outliers
+plot(df_agency$TRANSACTION_AMOUNT_SUM)
+df_agency[which(df_agency$TRANSACTION_AMOUNT_SUM>200000),]
+df_agency = df_agency[-which(df_agency$TRANSACTION_AMOUNT_SUM>200000),]
+plot(df_agency$TRANSACTION_AMOUNT_SUM)
+df_agency$TRANSACTION_AMOUNT_SUM
+```
+
+
+# MLR Inference
+```{r}
+# MLR Inference: not a good fit
+fit.lm = lm(TRANSACTION_AMOUNT_SUM ~ MONTHLY_COUNTS + month + year, df_agency)
+summary(fit.lm)
+par(mfrow = c(2,2))
+plot(fit.lm)
+```
+
+# Training and Testing Datasets
+```{r}
+size <- nrow(df_agency)
+sampler <- sample(as.vector(c(rep(TRUE,0.7*size+1),rep(FALSE,0.3*size))))
+training <- df_agency[sampler,]
+testing <- df_agency[!sampler,]
+```
+
+# GAM Model
+```{r}
+library(mgcv)
+fit.gam = gam(TRANSACTION_AMOUNT_SUM ~ MONTHLY_COUNTS + month + year, data = training)
+summary(fit.gam)
+yhat.gam = predict(fit.gam, newdata = testing)
+(MSE.gam = mean((yhat.gam - testing$TRANSACTION_AMOUNT_SUM)^2))
+plot(testing$TRANSACTION_AMOUNT_SUM, main = "General Additive Model: Actual(Red) vs Predicted(Green)", type = "l", col = "green")
+lines(yhat.gam, col="brown")
+```
+## Decision Tree Model
+```{r, fig.align='center'}
+training
+library(ISLR)
+library(tree)
+set.seed(100)
+fit.tree = tree(TRANSACTION_AMOUNT_SUM~., training[3:6])
+plot(fit.tree)
+text(fit.tree, pretty = 0)
+#summary(fit.tree)
+yhat.tree = predict(fit.tree, newdata =testing)
+(MSE.tree = mean((yhat.tree - testing$TRANSACTION_AMOUNT_SUM)^2))
+plot(testing$TRANSACTION_AMOUNT_SUM, main = "Decision Tree Model: Actual(Red) vs Predicted(Green)", type = "line", col = "green") 
+lines(yhat.gam, col="brown")
+```
+
+# Bagging
+```{r, fig.align='center'}
+library(randomForest)
+#bagging
+fit.bag = randomForest(TRANSACTION_AMOUNT_SUM~., training[3:6], mtry=3, 
+                      importance =TRUE, ntree = 500)
+yhat.bag = predict(fit.bag, newdata = testing)
+(MSE.bag = mean((yhat.bag - testing$TRANSACTION_AMOUNT_SUM)^2))
+```
+# Ensemble Method: Boosting
+```{r, fig.align='center'}
+library(gbm)
+
+
+training$month <- as.numeric(training$month)
+training$year <- as.numeric(training$year)
+training$MONTHLY_COUNTS <- as.numeric(training$MONTHLY_COUNTS)
+
+
+set.seed(100)
+fit.boost = gbm(TRANSACTION_AMOUNT_SUM~., training[3:6], 
+                distribution = "gaussian", n.trees =500, 
+                interaction.depth = 5)
+summary(fit.boost)
+yhat.boost=predict(fit.boost, newdata =testing, n.trees =500)
+(MSE.boosting = mean((yhat.boost -testing$TRANSACTION_AMOUNT_SUM)^2))
+plot(testing$TRANSACTION_AMOUNT_SUM, main = "Boosting Regression: Actual(Red) vs Predicted(Green)", type = "line", col = "green")
+lines(yhat.gam, col="brown")
+```
+
+
+
+
+
+# Receivable forecasting for the vendor
+* remove large outliers
+* one_time: transaction shows up once
+* some_times: transaction shows up 2 to 8 times
+* many_times: transaction shows up more than 8 times
+
+# Data Reorganization
+```{r}
+# regroup VENDOR_NAME into less categories
+# using grouped monthly data
+# group by month
+df %>% 
+  mutate(TRANSACTION_DATE = format(as_date(ymd_hms(TRANSACTION_DATE)), "%Y-%m"))%>%
+  group_by( VENDOR_NAME, TRANSACTION_DATE) %>%
+  summarise(TRANSACTION_AMOUNT_SUM = sum(TRANSACTION_AMOUNT, na.omit = TRUE),
+            MONTHLY_COUNTS = n()) %>% 
+  mutate(month = as.numeric(substring(TRANSACTION_DATE,6,7)), 
+         year = substring(TRANSACTION_DATE,1,4)) %>% 
+  add_count(VENDOR_NAME)  -> df_vendor
+
+
+#check outliers: monthly transaction exceeds $1,000,000
+par(mfrow = c(2,2))
+plot(df_vendor$TRANSACTION_AMOUNT_SUM)
+df_vendor[which(df_vendor$TRANSACTION_AMOUNT_SUM>200000),]
+df_vendor = df_vendor[-which(df_vendor$TRANSACTION_AMOUNT_SUM>200000),]
+plot(df_vendor$TRANSACTION_AMOUNT_SUM)
+dev.off()
+
+#Exploration:
+df_vendor %>% 
+  group_by(VENDOR_NAME) %>% 
+  summarise(n = n()) -> df_occurrence
+
+df_occurrence
+
+sum(df_occurrence$n == 1) #number of vendor transaction occurrence=1
+sum(df_occurrence$n>1 & df_occurrence$n<=10) #between 1 and 8
+sum(df_occurrence$n > 10) #greater than 8
+
+
+df_vendor$n = ifelse(df_vendor$n == 1, 
+                     "one_time", ifelse(df_vendor$n > 10, "many_times", "some_times"))
+names(df_vendor)[7] = "occurrence"
+df_vendor$occurrence = as.factor(df_vendor$occurrence)
+df_vendor$year = as.factor(df_vendor$year)
+```
+
+# MLR Inference
+```{r}
+fit.lm = lm(TRANSACTION_AMOUNT_SUM ~ MONTHLY_COUNTS + month + year + occurrence, df_vendor)
+summary(fit.lm)
+par(mfrow = c(2,2))
+plot(fit.lm)
+dev.off()
+```
+*occurrence = one_time, some_time, MONTHLY_COUNTS, month are significant predictors
+*R-sqr is small, poor fit
+
+# Set training and testing data sets
+Each time we use training set to train the model and use testing set to assess model and compute MSE to compare models.
+```{r}
+set.seed(100)
+nrow(df_vendor)
+test = sample(nrow(df_vendor),10000)
+train = -test
+df.test = df_vendor[test,]
+df.train = df_vendor[train,]
+```
+
+# General Additive Model
+```{r}
+library(mgcv)
+fit.gam = gam(TRANSACTION_AMOUNT_SUM ~ s(MONTHLY_COUNTS) + month + year + occurrence, data = df.train)
+summary(fit.gam)
+yhat.gam = predict(fit.gam, newdata = df.test)
+(MSE.gam = mean((yhat.gam - df.test$TRANSACTION_AMOUNT_SUM)^2))
+plot(df.test$TRANSACTION_AMOUNT_SUM, main = "General Additive Model: Actual(Red) vs Predicted(Green)", type ="l", col = "green")
+lines(yhat.gam, col="brown")
+```
+Large MSE, bad fit.
+
+
+
+# Decision Tree Model
+```{r, fig.align='center'}
+library(ISLR)
+library(tree)
+set.seed(100)
+fit.tree = tree(TRANSACTION_AMOUNT_SUM~., df.train[3:7])
+plot(fit.tree)
+text(fit.tree, pretty = 0)
+#summary(fit.tree)
+yhat.tree = predict(fit.tree, newdata =df.test)
+(MSE.tree = mean((yhat.tree - df.test$TRANSACTION_AMOUNT_SUM)^2))
+plot(df.test$TRANSACTION_AMOUNT_SUM, main = "Decision Tree Model: Actual(Red) vs Predicted(Green)", type = "l", col = "green")
+lines(yhat.gam, col="brown")
+```
+
+# Bagging
+```{r, fig.align='center'}
+library(randomForest)
+#bagging
+fit.bag = randomForest(TRANSACTION_AMOUNT_SUM~., df.train[3:7], mtry=4, 
+                      importance =TRUE, ntree = 5)
+yhat.bag = predict(fit.bag, newdata = df.test)
+(MSE.bag = mean((yhat.bag - df.test$TRANSACTION_AMOUNT_SUM)^2))
+
+```
+
+# Ensemble Method: Boosting
+```{r, fig.align='center'}
+library(gbm)
+
+set.seed(100)
+
+fit.boost = gbm(TRANSACTION_AMOUNT_SUM~., df.train[3:7], 
+                distribution = "gaussian", n.trees =500, 
+                interaction.depth = 5)
+summary(fit.boost)
+yhat.boost=predict(fit.boost, newdata =df.test, n.trees =500)
+(MSE.boosting = mean((yhat.boost -df.test$TRANSACTION_AMOUNT_SUM)^2))
+plot(df.test$TRANSACTION_AMOUNT_SUM, main = "Boosting Model: Actual(Red) vs Predicted(Green)", col = "green")
+lines(yhat.gam, col="brown")
+
+```
+
+
